@@ -1,0 +1,130 @@
+#include "cache.h"
+ 
+// ------------------------- DO NOT CHANGE -------------------------------- //
+#define IP_TRACKER_COUNT 64           // Number of IP trackers
+#define PREFETCH_DEGREE 5            // Prefetch degree
+// ------------------------- DO NOT CHANGE -------------------------------- //
+ 
+class IP_TRACKER {
+  private:
+    uint64_t ip_value;
+    uint64_t cl_addr_prev, cl_addr_recent;
+    int16_t stride;  //0 1st access
+    uint8_t state;   // max possible stride is 63
+ 
+  public:
+    uint8_t lru;
+ 
+    void initialise_ip(uint64_t ip, uint64_t addr) {
+        state = 0; 
+        ip_value = ip;
+        cl_addr_recent = addr;
+        stride = 0;
+    }
+ 
+    int64_t set_cl_addr_recent(uint64_t addr) {
+        cl_addr_prev = cl_addr_recent;
+        cl_addr_recent = addr;
+        int64_t temp_stride = cl_addr_recent - cl_addr_prev;
+
+        if (state == 3 && stride == temp_stride) {
+            return stride;
+        }
+ 
+        if (state && stride && (stride == temp_stride)) {
+            if (state == 2) {
+                state = 3; 
+            }
+            return stride;
+        }
+ 
+        if (state == 2) {
+            stride = temp_stride;
+            state = 1;
+        } else if (state == 1) {
+            stride = temp_stride;
+            state = 2;
+        } else {
+            stride = temp_stride;
+            state = 1;
+        }
+
+        return -1;
+    }
+ 
+    uint64_t get_ip() { return ip_value; }
+    uint64_t get_mr_addr() { return cl_addr_recent; }
+    uint8_t get_stride() { return stride; }
+};
+ 
+IP_TRACKER trackers[IP_TRACKER_COUNT];
+ 
+// ------------------------- Initialize the prefetcher ------------------------- //
+void CACHE::l1d_prefetcher_initialize() {
+    cout << "CPU " << cpu << " L1D IP-based stride prefetcher with adaptive learning" << endl;
+    for (int i = 0; i < IP_TRACKER_COUNT; i++) {
+        trackers[i].lru = i;
+    }
+}
+ 
+// --------------- This is the main prefetcher operate function ---------------- //
+void CACHE::l1d_prefetcher_operate(uint64_t addr, uint64_t ip, uint8_t cache_hit, uint8_t type, uint8_t critical_ip_flag) {
+    uint64_t cl_addr = addr >> LOG2_BLOCK_SIZE;
+    int tracker_index = -1;
+ 
+    for (int i = 0; i < IP_TRACKER_COUNT; i++) {
+        if (trackers[i].get_ip() == ip) {
+            tracker_index = i;
+            break;
+        }
+    }
+ 
+    if (tracker_index == -1) {
+        for (int k = 0; k < IP_TRACKER_COUNT; k++) {
+            if (trackers[k].lru == (IP_TRACKER_COUNT - 1)) {
+                trackers[k].initialise_ip(ip, cl_addr);
+                tracker_index = k;
+                break;
+            }
+    }
+ 
+    for (int j = 0; j < IP_TRACKER_COUNT; j++) {
+        if (trackers[j].lru < trackers[tracker_index].lru) {
+            trackers[j].lru++;
+        }
+    }
+    trackers[tracker_index].lru = 0;
+    return;
+    }
+ 
+    int64_t stride = trackers[tracker_index].set_cl_addr_recent(cl_addr);
+ 
+    if (stride != -1) {
+        for(int i =3 ; i <= PREFETCH_DEGREE+2;i++){
+            uint64_t pf_address = (cl_addr+stride*i)<<LOG2_BLOCK_SIZE;
+            if ((pf_address >> LOG2_PAGE_SIZE) != (addr >> LOG2_PAGE_SIZE))
+              continue;
+            //if(pf_address>>LOG2_BLOCK_SIZE != addr>> LOG2_BLOCK_SIZE)        
+              prefetch_line(ip, addr, pf_address, FILL_L1, 0);
+ 
+        }
+    }
+ 
+    for (int i = 0; i < IP_TRACKER_COUNT; i++) {
+        if (trackers[i].lru < trackers[tracker_index].lru) {
+            trackers[i].lru++;
+        }
+    }
+    trackers[tracker_index].lru = 0;
+}
+ 
+// ------------------------- DO NOT CHANGE -------------------------------- //
+void CACHE::l1d_prefetcher_cache_fill(uint64_t v_addr, uint64_t addr, uint32_t set, uint32_t way, uint8_t prefetch, uint64_t v_evicted_addr, uint64_t evicted_addr, uint32_t metadata_in) {
+	return;
+}
+ 
+void CACHE::l1d_prefetcher_final_stats() {
+	cout << "CPU " << cpu << " L1D IP-based stride prefetcher final stats" << endl;
+	cout << "Degree: " << PREFETCH_DEGREE << endl;
+}
+// ------------------------- DO NOT CHANGE -------------------------------- //
